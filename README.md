@@ -20,7 +20,7 @@ Copy-Item .env.example .env
 npm.cmd run dev
 ```
 
-Open `http://127.0.0.1:3000`. Project files default to local application data on Windows, outside the repository. Use `STUDIO_DATA_DIR` only when you deliberately need a different location.
+Open `http://127.0.0.1:3001`. Project files default to local application data on Windows, outside the repository. Use `STUDIO_DATA_DIR` only when you deliberately need a different location.
 
 The first real video flow is:
 
