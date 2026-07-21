@@ -19,7 +19,7 @@ The studio began as a local-first renderer. That is intentional: a multi-minute 
 
 1. Import this repository and use the standard Next.js build command: `npm run build`.
 2. Set every private value from `.env.example` in the platform's encrypted environment-variable dashboard. At minimum, set a long random `STUDIO_ACCESS_TOKEN` before making the deployment public.
-3. Do not expose `ANTHROPIC_API_KEY`, `ELEVENLABS_API_KEY`, or `POCKETBASE_SUPERUSER_TOKEN` as browser variables. None of them should use a `NEXT_PUBLIC_` prefix.
+3. Do not expose `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, or `POCKETBASE_SUPERUSER_TOKEN` as browser variables. None of them should use a `NEXT_PUBLIC_` prefix.
 4. Set `RENDER_WORKER_URL` to the HTTPS URL of the persistent worker and set a long random `WORKER_SHARED_SECRET`. Set exactly the same worker secret on the worker, but leave `RENDER_WORKER_URL` unset there. This makes every authenticated editor API call and server-rendered project read pass through the worker without exposing its credentials to the browser.
 
 ## PocketBase

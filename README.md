@@ -16,7 +16,7 @@ npm.cmd install
 Copy-Item .env.example .env
 # One-time local Tortoise setup (NVIDIA GPU required)
 .\scripts\setup-tortoise.ps1
-# Add an Anthropic key and one licensed music track in public/music/
+# Add an OpenAI API key and one licensed music track in public/music/
 npm.cmd run dev
 ```
 
@@ -34,7 +34,7 @@ The first real video flow is:
 npm.cmd run smoke
 ```
 
-Smoke uses deterministic local LLM/TTS stubs if provider credentials are absent, but still renders both MP4 formats. Set `SMOKE_STUB=0` with an Anthropic key and Tortoise installed to exercise the live local voice path.
+Smoke uses deterministic local LLM/TTS stubs if provider credentials are absent, but still renders both MP4 formats. Set `SMOKE_STUB=0` with an OpenAI key and Tortoise installed to exercise the live local voice path.
 
 ## Local Tortoise voice
 
