@@ -1,6 +1,7 @@
 node_modules/
 .next/
 data/
+pocketbase/pb_data/
 .env*
 !.env.example
 *.tsbuildinfo

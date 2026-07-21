@@ -1,6 +1,7 @@
 import Link from "next/link";
 
-import {listProjects} from "@/lib/workflow";
+import {requireStudioPageAccess} from "@/lib/auth";
+import {loadStudioProjects} from "@/lib/studio-data";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +12,9 @@ const targetName: Record<string, string> = {
   tiktok: "TikTok",
 };
 
-export default function ProjectsPage() {
-  const projects = listProjects();
+export default async function ProjectsPage() {
+  await requireStudioPageAccess();
+  const projects = await loadStudioProjects();
   return (
     <main className="mx-auto min-h-screen max-w-5xl px-6 py-12 sm:px-10">
       <header className="mb-12 flex flex-wrap items-end justify-between gap-6 border-b-4 border-[#171717] pb-7">

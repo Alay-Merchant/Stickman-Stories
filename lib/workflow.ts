@@ -9,6 +9,7 @@ import {renderStoryboard} from "./ffmpeg";
 import {createLLM} from "./llm";
 import {
   createProjectFiles,
+  ensureProjectDirectories,
   getProjectPaths,
   readJsonFile,
   readProjectManifest,
@@ -19,24 +20,29 @@ import {
   writeJsonFile,
   writeProjectManifest,
 } from "./project";
-import {Pack, ScenePurpose, Storyboard, Target, type Pack as PackValue, type Storyboard as StoryboardValue, type Target as TargetValue} from "./schema";
+import {runQa} from "./qa";
+import {segmentSource, sourceRefsForIndex} from "./source";
+import {
+  EditorialBrief,
+  Pack,
+  ProjectSettings,
+  QaReport,
+  RightsStatus,
+  Script as ScriptSchema,
+  Storyboard,
+  Target,
+  type EditorialBrief as BriefValue,
+  type Pack as PackValue,
+  type ProjectSettings as ProjectSettingsValue,
+  type RightsStatus as RightsStatusValue,
+  type Script as ScriptValue,
+  type Storyboard as StoryboardValue,
+  type Target as TargetValue,
+} from "./schema";
 import {createTTS} from "./tts";
 
-const Brief = z.object({
-  objective: z.string().min(1).max(500),
-  audience: z.string().min(1).max(500),
-  angle: z.string().min(1).max(500),
-  tone: z.enum(["curious", "calm", "playful", "direct", "serious"]),
-  key_ideas: z.array(z.string().min(1).max(500)).min(1).max(8),
-  caveats: z.array(z.string().min(1).max(500)).max(12).default([]),
-  cta: z.string().min(1).max(500),
-});
-export type Brief = z.infer<typeof Brief>;
-
-const Script = z.object({
-  sections: z.array(z.object({purpose: ScenePurpose, narration: z.string().min(1).max(1_000)})).min(1).max(120),
-});
-export type Script = z.infer<typeof Script>;
+export type Brief = BriefValue;
+export type Script = ScriptValue;
 
 type AssetManifest = {
   characters: Array<{id: string}>;
@@ -51,6 +57,18 @@ export type CreateProjectInput = {
   sourceText?: string;
   inputMode?: InputMode;
   target: TargetValue;
+  rightsStatus?: RightsStatusValue;
+  settings?: Partial<ProjectSettingsValue>;
+};
+
+export type UpdateProjectInput = {
+  title?: string;
+  author?: string | null;
+  sourceText?: string;
+  inputMode?: InputMode;
+  target?: TargetValue;
+  rightsStatus?: RightsStatusValue;
+  settings?: Partial<ProjectSettingsValue>;
 };
 
 const promptDir = path.join(process.cwd(), "lib", "prompts");
@@ -145,7 +163,8 @@ const ensureAssetVocabulary = (value: unknown, target: TargetValue): unknown => 
   return candidate;
 };
 
-const durationForTarget = (target: TargetValue) => (target === "yt_long" ? 420 : target === "reel" ? 75 : 55);
+const durationForTarget = (target: TargetValue, settings?: ProjectSettingsValue) =>
+  settings?.duration_seconds ?? (target === "yt_long" ? 420 : target === "reel" ? 75 : 55);
 
 const referenceSource = (title: string, author: string | null) =>
   `Reference-only project for ${title}${author ? ` by ${author}` : ""}. No manuscript was supplied. ` +
@@ -163,6 +182,56 @@ const recordFromManifest = (manifest: ProjectManifest): ProjectRecord => {
   const paths = getProjectPaths(manifest.id);
   return {...manifest, dir: paths.root};
 };
+
+const sourceFile = (id: string) => path.join(getProjectPaths(id).source, "source.md");
+
+const readSourceSections = (id: string) => {
+  const paths = getProjectPaths(id);
+  if (!existsSync(paths.sourceSections)) return segmentSource(readFileSync(sourceFile(id), "utf8"));
+  return z.array(z.object({
+    id: z.string(),
+    heading: z.string(),
+    start_offset: z.number(),
+    end_offset: z.number(),
+    excerpt: z.string(),
+  })).parse(readJsonFile(paths.sourceSections));
+};
+
+const writeRevision = (id: string, kind: "brief" | "script" | "storyboard", value: unknown) => {
+  const paths = ensureProjectDirectories(id);
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  writeJsonFile(path.join(paths.revisions, `${kind}-${stamp}.json`), value);
+};
+
+const annotateScript = (script: ScriptValue, sections: ReturnType<typeof readSourceSections>, mode: InputMode): ScriptValue =>
+  ScriptSchema.parse({
+    sections: script.sections.map((section, index) => ({
+      ...section,
+      claim_kind: mode === "reference_only" ? "interpretation" : section.claim_kind,
+      source_refs: (() => {
+        const known = new Set(sections.map((source) => source.id));
+        const valid = section.source_refs.filter((reference) => known.has(reference));
+        return valid.length ? valid : mode === "text" ? sourceRefsForIndex(sections, index) : [];
+      })(),
+      review_status: "needs_review",
+    })),
+  });
+
+const annotateStoryboard = (storyboard: StoryboardValue, sections: ReturnType<typeof readSourceSections>, mode: InputMode): StoryboardValue =>
+  Storyboard.parse({
+    ...storyboard,
+    scenes: storyboard.scenes.map((scene, index) => ({
+      ...scene,
+      claim_kind: mode === "reference_only" ? "interpretation" : scene.claim_kind,
+      source_refs: (() => {
+        const known = new Set(sections.map((source) => source.id));
+        const valid = scene.source_refs.filter((reference) => known.has(reference));
+        return valid.length ? valid : mode === "text" ? sourceRefsForIndex(sections, index) : [];
+      })(),
+      alt_description: scene.alt_description || `${scene.action} on ${scene.background}`,
+      review_status: scene.review_status === "ok" ? "needs_review" : scene.review_status,
+    })),
+  });
 
 const retryJson = async <T>(
   label: string,
@@ -207,8 +276,19 @@ export const createProject = (input: CreateProjectInput): ProjectRecord => {
     inputMode: mode,
     target,
     sourceText,
+    rightsStatus: input.rightsStatus,
+    settings: input.settings,
     createdAt,
   });
+  const sections = segmentSource(sourceText);
+  writeJsonFile(paths.sourceMetadata, {
+    imported_at: createdAt,
+    character_count: sourceText.length,
+    input_mode: mode,
+    rights_status: manifest.rights_status,
+  });
+  writeJsonFile(paths.sourceSections, sections);
+  writeJsonFile(paths.claims, []);
   getDb()
     .prepare(
       "INSERT INTO project (id, title, author, input_mode, target, status, dir, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
@@ -219,15 +299,140 @@ export const createProject = (input: CreateProjectInput): ProjectRecord => {
 
 export const listProjects = (): ProjectRecord[] =>
   getDb()
-    .prepare("SELECT id, title, author, input_mode, target, status, dir, created_at FROM project ORDER BY created_at DESC")
-    .all() as ProjectRecord[];
+    .prepare("SELECT id FROM project ORDER BY created_at DESC")
+    .all()
+    .flatMap((row) => {
+      const id = (row as {id?: unknown}).id;
+      if (typeof id !== "string") return [];
+      try {
+        return [recordFromManifest(readProjectManifest(id))];
+      } catch {
+        return [];
+      }
+    });
 
 export const getProject = (id: string): ProjectRecord => {
   const row = getDb()
-    .prepare("SELECT id, title, author, input_mode, target, status, dir, created_at FROM project WHERE id = ?")
-    .get(id) as ProjectRecord | undefined;
+    .prepare("SELECT id FROM project WHERE id = ?")
+    .get(id) as {id: string} | undefined;
   if (!row) throw new Error("Project not found.");
-  return row;
+  return recordFromManifest(readProjectManifest(id));
+};
+
+export const updateProject = (id: string, input: UpdateProjectInput): ProjectRecord => {
+  const current = readProjectManifest(id);
+  const title = input.title === undefined ? current.title : input.title.trim();
+  if (!title) throw new Error("A project title is required.");
+  if (title.length > MAX_TITLE_CHARACTERS) throw new Error(`Project titles must be ${MAX_TITLE_CHARACTERS} characters or fewer.`);
+  const author = input.author === undefined ? current.author : input.author?.trim() || null;
+  if (author && author.length > MAX_AUTHOR_CHARACTERS) throw new Error(`Author names must be ${MAX_AUTHOR_CHARACTERS} characters or fewer.`);
+  const inputMode = input.inputMode ?? current.input_mode;
+  const target = Target.parse(input.target ?? current.target);
+  const rightsStatus = RightsStatus.parse(input.rightsStatus ?? current.rights_status);
+  const settings = ProjectSettings.parse({...current.settings, ...(input.settings ?? {})});
+  let source = input.sourceText === undefined ? readFileSync(sourceFile(id), "utf8") : input.sourceText.trim();
+  if (inputMode === "reference_only") source = referenceSource(title, author);
+  if (inputMode === "text" && !source.trim()) throw new Error("Paste source notes or choose reference-only mode.");
+  if (source.length > MAX_SOURCE_CHARACTERS) throw new Error(`Source notes must be ${MAX_SOURCE_CHARACTERS.toLocaleString()} characters or fewer.`);
+
+  const sourceChanged = source !== readFileSync(sourceFile(id), "utf8");
+  const rightsChanged = rightsStatus !== current.rights_status;
+  const changed = sourceChanged || rightsChanged || title !== current.title || author !== current.author || target !== current.target || inputMode !== current.input_mode || JSON.stringify(settings) !== JSON.stringify(current.settings);
+  const manifest: ProjectManifest = {
+    ...current,
+    title,
+    author,
+    input_mode: inputMode,
+    target,
+    rights_status: rightsStatus,
+    settings,
+    status: changed ? "created" : current.status,
+    approvals: changed
+      ? {...current.approvals, script_reviewed_at: null, storyboard_reviewed_at: null, ...(sourceChanged || rightsChanged ? {source_reviewed_at: null} : {})}
+      : current.approvals,
+  };
+  if (sourceChanged) {
+    writeFileSync(sourceFile(id), source, "utf8");
+    const sections = segmentSource(source);
+    const paths = getProjectPaths(id);
+    writeJsonFile(paths.sourceSections, sections);
+    writeJsonFile(paths.sourceMetadata, {
+      imported_at: new Date().toISOString(),
+      character_count: source.length,
+      input_mode: inputMode,
+      rights_status: rightsStatus,
+    });
+  }
+  writeProjectManifest(id, manifest);
+  getDb().prepare("UPDATE project SET title = ?, author = ?, input_mode = ?, target = ?, status = ? WHERE id = ?")
+    .run(title, author, inputMode, target, manifest.status, id);
+  return recordFromManifest(readProjectManifest(id));
+};
+
+export const approveProject = (id: string, gate: "source" | "script" | "storyboard"): ProjectRecord => {
+  const current = readProjectManifest(id);
+  const field = `${gate}_reviewed_at` as keyof ProjectManifest["approvals"];
+  const paths = getProjectPaths(id);
+  if (gate === "script" && existsSync(paths.script)) {
+    const script = ScriptSchema.parse(readJsonFile(paths.script));
+    writeRevision(id, "script", script);
+    writeJsonFile(paths.script, {...script, sections: script.sections.map((section) => ({...section, review_status: "ok" as const}))});
+  }
+  if (gate === "storyboard" && existsSync(paths.storyboardJson)) {
+    const storyboard = Storyboard.parse(readJsonFile(paths.storyboardJson));
+    writeRevision(id, "storyboard", storyboard);
+    writeJsonFile(paths.storyboardJson, {...storyboard, scenes: storyboard.scenes.map((scene) => ({...scene, review_status: "ok" as const}))});
+  }
+  const manifest: ProjectManifest = {
+    ...current,
+    approvals: {...current.approvals, [field]: new Date().toISOString()},
+  };
+  writeProjectManifest(id, manifest);
+  return recordFromManifest(readProjectManifest(id));
+};
+
+export const saveBrief = (id: string, value: unknown): Brief => {
+  const brief = EditorialBrief.parse(value);
+  const paths = ensureProjectDirectories(id);
+  if (existsSync(paths.brief)) writeRevision(id, "brief", readJsonFile(paths.brief));
+  writeJsonFile(paths.brief, brief);
+  updateStatus(id, "scripted");
+  return brief;
+};
+
+export const saveScript = (id: string, value: unknown): ScriptValue => {
+  const manifest = readProjectManifest(id);
+  const script = annotateScript(ScriptSchema.parse(value), readSourceSections(id), manifest.input_mode);
+  const paths = ensureProjectDirectories(id);
+  if (existsSync(paths.script)) writeRevision(id, "script", readJsonFile(paths.script));
+  writeJsonFile(paths.script, script);
+  writeProjectManifest(id, {...manifest, status: "scripted", approvals: {...manifest.approvals, script_reviewed_at: null, storyboard_reviewed_at: null}});
+  getDb().prepare("UPDATE project SET status = ? WHERE id = ?").run("scripted", id);
+  return script;
+};
+
+export const saveStoryboard = (id: string, value: unknown): StoryboardValue => {
+  const manifest = readProjectManifest(id);
+  const storyboard = annotateStoryboard(Storyboard.parse(value), readSourceSections(id), manifest.input_mode);
+  if (storyboard.target !== manifest.target) throw new Error("The storyboard target must match the project target.");
+  const paths = ensureProjectDirectories(id);
+  if (existsSync(paths.storyboardJson)) writeRevision(id, "storyboard", readJsonFile(paths.storyboardJson));
+  writeJsonFile(paths.storyboardJson, storyboard);
+  writeProjectManifest(id, {...manifest, status: "storyboarded", approvals: {...manifest.approvals, storyboard_reviewed_at: null}});
+  getDb().prepare("UPDATE project SET status = ? WHERE id = ?").run("storyboarded", id);
+  return storyboard;
+};
+
+export const runProjectQa = (id: string) => {
+  const paths = getProjectPaths(id);
+  const report = runQa({
+    manifest: readProjectManifest(id),
+    sourceSections: readSourceSections(id),
+    script: existsSync(paths.script) ? ScriptSchema.parse(readJsonFile(paths.script)) : null,
+    storyboard: existsSync(paths.storyboardJson) ? Storyboard.parse(readJsonFile(paths.storyboardJson)) : null,
+  });
+  writeJsonFile(paths.qaReport, report);
+  return report;
 };
 
 const generateProjectUnlocked = async (id: string) => {
@@ -241,7 +446,7 @@ const generateProjectUnlocked = async (id: string) => {
     TARGET: project.target,
     INPUT_MODE: project.input_mode,
     SOURCE: source,
-    DURATION: String(durationForTarget(project.target)),
+    DURATION: String(durationForTarget(project.target, project.settings)),
   };
 
   const briefTemplate = prompt("brief", common);
@@ -253,11 +458,11 @@ const generateProjectUnlocked = async (id: string) => {
         `${briefTemplate}${repair ? "\n\nYour previous response was invalid. Return only valid contract JSON." : ""}`,
         true,
       ),
-    Brief,
+    EditorialBrief,
   );
 
   const scriptTemplate = prompt("script", {...common, BRIEF: pretty(brief)});
-  const script = await retryJson(
+  const generatedScript = await retryJson(
     "Script",
     (repair) =>
       llm.generate(
@@ -265,15 +470,16 @@ const generateProjectUnlocked = async (id: string) => {
         `${scriptTemplate}${repair ? "\n\nYour previous response was invalid. Return only valid contract JSON." : ""}`,
         true,
       ),
-    Script,
+    ScriptSchema,
   );
+  const script = annotateScript(generatedScript, readSourceSections(id), project.input_mode);
 
   const storyboardTemplate = prompt("storyboard", {
     TARGET: project.target,
     ASSET_IDS: assetIds().join(", "),
     SCRIPT: pretty(script),
   });
-  const storyboard = await retryJson(
+  const generatedStoryboard = await retryJson(
     "Storyboard",
     (repair) =>
       llm.generate(
@@ -285,6 +491,8 @@ const generateProjectUnlocked = async (id: string) => {
     (value) => ensureAssetVocabulary(value, project.target),
   );
 
+  const storyboard = annotateStoryboard(generatedStoryboard, readSourceSections(id), project.input_mode);
+
   // The two v1 style checks are deliberately small: the schema limits text
   // and provides one accent field per scene. Keep the explicit guard here so
   // additions to the generator contract cannot silently bypass it.
@@ -294,15 +502,22 @@ const generateProjectUnlocked = async (id: string) => {
     }
   }
 
+  if (existsSync(paths.brief)) writeRevision(id, "brief", readJsonFile(paths.brief));
+  if (existsSync(paths.script)) writeRevision(id, "script", readJsonFile(paths.script));
+  if (existsSync(paths.storyboardJson)) writeRevision(id, "storyboard", readJsonFile(paths.storyboardJson));
   writeJsonFile(paths.brief, brief);
   writeJsonFile(paths.script, script);
   writeJsonFile(paths.storyboardJson, storyboard);
-  updateStatus(id, "storyboarded");
+  const manifest = readProjectManifest(id);
+  writeProjectManifest(id, {...manifest, status: "storyboarded", approvals: {...manifest.approvals, script_reviewed_at: null, storyboard_reviewed_at: null}});
+  getDb().prepare("UPDATE project SET status = ? WHERE id = ?").run("storyboarded", id);
   return {brief, script, storyboard};
 };
 
 const narrateProjectUnlocked = async (id: string) => {
   const paths = getProjectPaths(id);
+  const qa = runProjectQa(id);
+  if (!qa.can_render) throw new Error("Resolve the blocking review issues before narration. Open QA for the exact checks.");
   const storyboard = Storyboard.parse(readJsonFile(paths.storyboardJson));
   const tts = createTTS();
   mkdirSync(paths.audio, {recursive: true});
@@ -325,33 +540,83 @@ const narrateProjectUnlocked = async (id: string) => {
 
   const audioFirstStoryboard = Storyboard.parse({...storyboard, scenes});
   writeJsonFile(paths.storyboardJson, audioFirstStoryboard);
-  updateStatus(id, "narrated");
+  const manifest = readProjectManifest(id);
+  writeProjectManifest(id, {...manifest, status: "narrated", approvals: {...manifest.approvals, storyboard_reviewed_at: null}});
+  getDb().prepare("UPDATE project SET status = ? WHERE id = ?").run("narrated", id);
   return {storyboard: audioFirstStoryboard, audio};
 };
 
 const renderProjectUnlocked = async (id: string) => {
   const paths = getProjectPaths(id);
+  const qa = runProjectQa(id);
+  if (!qa.can_render) throw new Error("Resolve the blocking QA issues before rendering. Open QA for the exact checks.");
   const storyboard = Storyboard.parse(readJsonFile(paths.storyboardJson));
   const audio = storyboard.scenes.map((scene) => path.join(paths.audio, `scene_${scene.scene_id}.mp3`));
   const missing = audio.find((filePath) => !existsSync(filePath));
   if (missing) throw new Error("Narration must complete before rendering. One or more scene MP3s are missing.");
   const outputs = await renderStoryboard({projectDir: paths.root, storyboard, audioPaths: audio});
+  const srt = readFileSync(paths.captions, "utf8").trim();
+  writeFileSync(paths.captionsVtt, `WEBVTT\n\n${srt.replace(/,/g, ".")}\n`, "utf8");
   updateStatus(id, "rendered");
   return outputs;
 };
 
 const packMarkdown = (pack: PackValue) => {
   const titles = pack.titles.map((title, index) => `${index + 1}. ${title.text} (${title.angle}, ${title.score.toFixed(2)})`).join("\n");
-  return `# Publishing pack\n\n## Ranked titles\n${titles}\n\n## Description\n${pack.description}\n\n## Tags\n${pack.tags.join(", ")}\n\n## Thumbnail copy\n${pack.thumbnail_copy}\n`;
+  const chapters = pack.chapters.length ? pack.chapters.map((chapter) => `- ${chapter.timestamp} ${chapter.title}`).join("\n") : "- Add reviewed chapters after final edit.";
+  const candidates = pack.short_candidates.length ? pack.short_candidates.map((candidate) => `- ${candidate.label}: scenes ${candidate.scene_ids.join(", ")} — ${candidate.rationale}`).join("\n") : "- No short candidates selected yet.";
+  return `# Publishing pack\n\n## Ranked titles\n${titles}\n\n## Description\n${pack.description}\n\n## Tags\n${pack.tags.join(", ")}\n\n## Thumbnail copy\n${pack.thumbnail_copy}\n\n## Chapters\n${chapters}\n\n## Pinned comment\n${pack.pinned_comment || "Add a reviewed pinned comment."}\n\n## Short-form candidates\n${candidates}\n`;
+};
+
+const timestamp = (seconds: number) => {
+  const rounded = Math.max(0, Math.floor(seconds));
+  const minutes = Math.floor(rounded / 60);
+  const remainder = String(rounded % 60).padStart(2, "0");
+  return `${minutes}:${remainder}`;
+};
+
+const enrichPack = (pack: PackValue, storyboard: StoryboardValue | null): PackValue => {
+  if (!storyboard) return pack;
+  let elapsed = 0;
+  const chapters = storyboard.scenes.reduce<PackValue["chapters"]>((entries, scene) => {
+    const start = elapsed;
+    elapsed += scene.duration_seconds;
+    if (entries.length < 12 && ["hook", "explain", "demonstrate", "recap"].includes(scene.purpose)) {
+      entries.push({timestamp: timestamp(start), title: scene.on_screen_text || scene.narration.split(/[.!?]/)[0].slice(0, 80)});
+    }
+    return entries;
+  }, []);
+  const candidates = storyboard.scenes
+    .filter((scene) => scene.purpose === "hook" || scene.purpose === "demonstrate" || scene.purpose === "recap")
+    .slice(0, 8)
+    .map((scene) => ({
+      label: scene.on_screen_text || `Scene ${scene.scene_id}`,
+      scene_ids: [scene.scene_id],
+      rationale: `${scene.purpose} with a self-contained teaching beat.`,
+    }));
+  return Pack.parse({
+    ...pack,
+    chapters: pack.chapters.length ? pack.chapters : chapters,
+    pinned_comment: pack.pinned_comment || "What is one small change you can make today?",
+    short_candidates: pack.short_candidates.length ? pack.short_candidates : candidates,
+  });
+};
+
+const escapeXml = (value: string) => value.replace(/[&<>"']/g, (character) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;"})[character] ?? character);
+
+const writeThumbnail = (outPath: string, project: ProjectRecord, pack: PackValue) => {
+  const text = escapeXml((pack.thumbnail_copy || project.title).slice(0, 40));
+  const title = escapeXml(project.title.slice(0, 80));
+  writeFileSync(outPath, `<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="720" viewBox="0 0 1280 720"><rect width="1280" height="720" fill="#FAFAF7"/><path d="M145 520 L270 325 L395 520 M270 325 L270 130" fill="none" stroke="#171717" stroke-width="18" stroke-linecap="round"/><circle cx="270" cy="105" r="48" fill="none" stroke="#171717" stroke-width="18"/><path d="M555 220 H1130 M555 265 H1005" stroke="#2F80ED" stroke-width="18" stroke-linecap="round"/><text x="555" y="390" fill="#171717" font-family="Arial, sans-serif" font-size="82" font-weight="800">${text}</text><text x="555" y="475" fill="#4A4A4A" font-family="Arial, sans-serif" font-size="32">${title}</text><rect x="555" y="535" width="190" height="18" rx="9" fill="#F2C94C"/></svg>`, "utf8");
 };
 
 const packageProjectUnlocked = async (id: string) => {
   const project = getProject(id);
   const paths = getProjectPaths(id);
-  const script = readJsonFile<Script>(paths.script);
+  const script = ScriptSchema.parse(readJsonFile(paths.script));
   const llm = createLLM();
   const template = prompt("pack", {TARGET: project.target, SCRIPT: pretty(script)});
-  const pack = await retryJson(
+  const generatedPack = await retryJson(
     "Publishing pack",
     (repair) =>
       llm.generate(
@@ -361,8 +626,12 @@ const packageProjectUnlocked = async (id: string) => {
       ),
     Pack,
   );
+  const storyboard = existsSync(paths.storyboardJson) ? Storyboard.parse(readJsonFile(paths.storyboardJson)) : null;
+  const pack = enrichPack(generatedPack, storyboard);
   writeJsonFile(paths.packJson, pack);
   writeFileSync(paths.packMarkdown, packMarkdown(pack), "utf8");
+  writeFileSync(paths.shortsMarkdown, pack.short_candidates.map((candidate) => `# ${candidate.label}\n\nScenes: ${candidate.scene_ids.join(", ")}\n\n${candidate.rationale}\n`).join("\n"), "utf8");
+  writeThumbnail(paths.thumbnailSvg, project, pack);
   updateStatus(id, "packaged");
   return pack;
 };
@@ -370,16 +639,32 @@ const packageProjectUnlocked = async (id: string) => {
 export const projectArtifacts = (id: string) => {
   const paths = getProjectPaths(id);
   const present = (filePath: string) => existsSync(filePath);
+  const manifest = readProjectManifest(id);
+  const qa = present(paths.qaReport) ? QaReport.parse(readJsonFile(paths.qaReport)) : runQa({
+    manifest,
+    sourceSections: readSourceSections(id),
+    script: present(paths.script) ? ScriptSchema.parse(readJsonFile(paths.script)) : null,
+    storyboard: present(paths.storyboardJson) ? Storyboard.parse(readJsonFile(paths.storyboardJson)) : null,
+  });
   return {
-    project: getProject(id),
-    brief: present(paths.brief) ? readJsonFile<Brief>(paths.brief) : null,
-    script: present(paths.script) ? readJsonFile<Script>(paths.script) : null,
+    project: recordFromManifest(manifest),
+    source: {
+      text: existsSync(sourceFile(id)) ? readFileSync(sourceFile(id), "utf8") : "",
+      sections: readSourceSections(id),
+    },
+    brief: present(paths.brief) ? EditorialBrief.parse(readJsonFile(paths.brief)) : null,
+    script: present(paths.script) ? ScriptSchema.parse(readJsonFile(paths.script)) : null,
     storyboard: present(paths.storyboardJson) ? Storyboard.parse(readJsonFile(paths.storyboardJson)) : null,
     pack: present(paths.packJson) ? Pack.parse(readJsonFile(paths.packJson)) : null,
+    qa,
     files: {
       video16x9: present(paths.export16x9),
       video9x16: present(paths.export9x16),
       captions: present(paths.captions),
+      captionsVtt: present(paths.captionsVtt),
+      thumbnail: present(paths.thumbnailSvg),
+      publishingPack: present(paths.packMarkdown),
+      shortCandidates: present(paths.shortsMarkdown),
       audio: existsSync(paths.audio) ? readdirSync(paths.audio).filter((name) => /^scene_\d+\.mp3$/.test(name)) : [],
     },
   };

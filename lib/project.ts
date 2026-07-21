@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 
-import type { Target } from "./schema";
+import {ProjectSettings, RightsStatus, type Target, type ProjectSettings as ProjectSettingsValue, type RightsStatus as RightsStatusValue} from "./schema";
 import { getDataDirectory } from "./db";
 
 export const INPUT_MODES = ["text", "reference_only"] as const;
@@ -17,15 +17,8 @@ export const PROJECT_STATUSES = [
 ] as const;
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
-export interface ProjectRecord {
-  id: string;
-  title: string;
-  author: string | null;
-  input_mode: InputMode;
-  target: Target;
-  status: ProjectStatus;
+export interface ProjectRecord extends ProjectManifest {
   dir: string;
-  created_at: string;
 }
 
 export interface ProjectManifest {
@@ -35,18 +28,34 @@ export interface ProjectManifest {
   input_mode: InputMode;
   target: Target;
   status: ProjectStatus;
+  rights_status: RightsStatusValue;
+  settings: ProjectSettingsValue;
+  approvals: ProjectApprovals;
   created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectApprovals {
+  source_reviewed_at: string | null;
+  script_reviewed_at: string | null;
+  storyboard_reviewed_at: string | null;
 }
 
 export interface ProjectPaths {
   root: string;
   manifest: string;
   source: string;
+  sourceMetadata: string;
+  sourceSections: string;
+  claims: string;
   editorial: string;
   brief: string;
   script: string;
+  revisions: string;
   storyboard: string;
   storyboardJson: string;
+  review: string;
+  qaReport: string;
   audio: string;
   renders: string;
   masterRender: string;
@@ -54,8 +63,11 @@ export interface ProjectPaths {
   export16x9: string;
   export9x16: string;
   captions: string;
+  captionsVtt: string;
   packJson: string;
   packMarkdown: string;
+  thumbnailSvg: string;
+  shortsMarkdown: string;
 }
 
 export interface CreateProjectFilesInput {
@@ -65,6 +77,8 @@ export interface CreateProjectFilesInput {
   inputMode: InputMode;
   target: Target;
   sourceText?: string;
+  rightsStatus?: RightsStatusValue;
+  settings?: Partial<ProjectSettingsValue>;
   createdAt?: string;
 }
 
@@ -92,8 +106,11 @@ export function getProjectPaths(id: string): ProjectPaths {
   }
 
   const source = join(root, "source");
+  const knowledge = join(root, "knowledge");
   const editorial = join(root, "editorial");
+  const revisions = join(editorial, "revisions");
   const storyboard = join(root, "storyboard");
+  const review = join(root, "review");
   const audio = join(root, "audio");
   const renders = join(root, "renders");
   const exports = join(root, "exports");
@@ -102,11 +119,17 @@ export function getProjectPaths(id: string): ProjectPaths {
     root,
     manifest: join(root, "manifest.json"),
     source,
+    sourceMetadata: join(source, "metadata.json"),
+    sourceSections: join(knowledge, "sections.json"),
+    claims: join(knowledge, "claims.json"),
     editorial,
     brief: join(editorial, "brief.json"),
     script: join(editorial, "script.json"),
+    revisions,
     storyboard,
     storyboardJson: join(storyboard, "storyboard.json"),
+    review,
+    qaReport: join(review, "qa.json"),
     audio,
     renders,
     masterRender: join(renders, "master.mp4"),
@@ -114,8 +137,11 @@ export function getProjectPaths(id: string): ProjectPaths {
     export16x9: join(exports, "16x9.mp4"),
     export9x16: join(exports, "9x16.mp4"),
     captions: join(exports, "captions.srt"),
+    captionsVtt: join(exports, "captions.vtt"),
     packJson: join(exports, "pack.json"),
     packMarkdown: join(exports, "pack.md"),
+    thumbnailSvg: join(exports, "thumbnail.svg"),
+    shortsMarkdown: join(exports, "short-candidates.md"),
   };
 }
 
@@ -124,8 +150,11 @@ export function ensureProjectDirectories(id: string): ProjectPaths {
   for (const directory of [
     paths.root,
     paths.source,
+    join(paths.root, "knowledge"),
     paths.editorial,
+    paths.revisions,
     paths.storyboard,
+    paths.review,
     paths.audio,
     paths.renders,
     paths.exports,
@@ -151,6 +180,7 @@ export function createProjectFiles(input: CreateProjectFilesInput): {
   manifest: ProjectManifest;
 } {
   const paths = ensureProjectDirectories(input.id);
+  const timestamp = input.createdAt ?? new Date().toISOString();
   const manifest: ProjectManifest = {
     id: input.id,
     title: input.title,
@@ -158,7 +188,15 @@ export function createProjectFiles(input: CreateProjectFilesInput): {
     input_mode: input.inputMode,
     target: input.target,
     status: "created",
-    created_at: input.createdAt ?? new Date().toISOString(),
+    rights_status: RightsStatus.parse(input.rightsStatus ?? "commentary_review_required"),
+    settings: ProjectSettings.parse(input.settings ?? {}),
+    approvals: {
+      source_reviewed_at: null,
+      script_reviewed_at: null,
+      storyboard_reviewed_at: null,
+    },
+    created_at: timestamp,
+    updated_at: timestamp,
   };
 
   writeJsonFile(paths.manifest, manifest);
@@ -168,10 +206,28 @@ export function createProjectFiles(input: CreateProjectFilesInput): {
 }
 
 export function readProjectManifest(id: string): ProjectManifest {
-  return readJsonFile<ProjectManifest>(getProjectPaths(id).manifest);
+  const raw = readJsonFile<Partial<ProjectManifest>>(getProjectPaths(id).manifest);
+  const timestamp = raw.created_at ?? new Date().toISOString();
+  return {
+    id: String(raw.id ?? id),
+    title: String(raw.title ?? "Untitled project"),
+    author: raw.author ?? null,
+    input_mode: raw.input_mode ?? "text",
+    target: raw.target ?? "yt_short",
+    status: raw.status ?? "created",
+    rights_status: RightsStatus.parse(raw.rights_status ?? "commentary_review_required"),
+    settings: ProjectSettings.parse(raw.settings ?? {}),
+    approvals: {
+      source_reviewed_at: raw.approvals?.source_reviewed_at ?? null,
+      script_reviewed_at: raw.approvals?.script_reviewed_at ?? null,
+      storyboard_reviewed_at: raw.approvals?.storyboard_reviewed_at ?? null,
+    },
+    created_at: timestamp,
+    updated_at: raw.updated_at ?? timestamp,
+  };
 }
 
 export function writeProjectManifest(id: string, manifest: ProjectManifest): void {
   const paths = ensureProjectDirectories(id);
-  writeJsonFile(paths.manifest, manifest);
+  writeJsonFile(paths.manifest, {...manifest, updated_at: new Date().toISOString()});
 }
