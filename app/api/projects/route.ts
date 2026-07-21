@@ -31,7 +31,7 @@ export async function POST(request: Request) {
       ? (body.inputMode as (typeof INPUT_MODES)[number])
       : undefined;
     const target = Target.parse(body.target);
-    const project = createProject({title, author, sourceText, inputMode, target});
+    const {dir: _dir, ...project} = createProject({title, author, sourceText, inputMode, target});
     return NextResponse.json({project}, {status: 201});
   } catch (error) {
     return errorResponse(error);

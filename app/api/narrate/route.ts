@@ -11,7 +11,8 @@ export async function POST(request: Request) {
   try {
     const {id} = (await readJsonRequest(request, ACTION_REQUEST_MAX_BYTES)) as {id?: unknown};
     if (typeof id !== "string") throw new Error("A project id is required.");
-    return NextResponse.json(await narrateProject(id));
+    const {storyboard, audio} = await narrateProject(id);
+    return NextResponse.json({storyboard, audioCount: audio.length});
   } catch (error) {
     return NextResponse.json({error: publicErrorMessage(error, "Narration failed. Check the local provider settings and try again.")}, {status: 400});
   }
