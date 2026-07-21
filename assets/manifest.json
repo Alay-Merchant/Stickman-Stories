@@ -1,0 +1,15 @@
+{
+  "style_profile": "whiteboard_v1",
+  "characters": [
+    { "id": "learner", "poses": ["idle", "point", "think", "read", "celebrate", "confused"] }
+  ],
+  "props": [
+    { "id": "book" }, { "id": "phone" }, { "id": "arrow" }, { "id": "checkbox" },
+    { "id": "lightbulb" }, { "id": "graph" }, { "id": "coin" }, { "id": "clock" },
+    { "id": "brain" }, { "id": "ladder" }
+  ],
+  "backgrounds": [
+    { "id": "blank_board" }, { "id": "desk" }, { "id": "outdoor" }
+  ],
+  "placeholder": { "id": "placeholder" }
+}
