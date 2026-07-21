@@ -36,8 +36,10 @@ Run the current application on a VM/container with:
 - Node 20.9+ and enough RAM for Chromium/Remotion;
 - a trusted current FFmpeg configured with `FFMPEG_PATH`;
 - persistent `STUDIO_DATA_DIR` and a licensed music directory at `public/music`;
-- provider credentials and the same private access configuration;
+- the Tortoise Python environment (`scripts/setup-tortoise.ps1` on Windows), an NVIDIA CUDA GPU, Tortoise model cache, and consented voice assets;
 - `WORKER_SHARED_SECRET` matching the serverless editor (leave `RENDER_WORKER_URL` unset on the worker); and
 - HTTPS reverse proxying to a loopback-bound app process.
+
+Netlify or Vercel can host the public editor, but they cannot run this Tortoise renderer. Run the persistent render worker on a machine or cloud VM with an NVIDIA CUDA GPU, then configure the editor's `RENDER_WORKER_URL` and matching `WORKER_SHARED_SECRET`.
 
 Run `npm run smoke` on the worker image/host before its first real render. Do not publish original source material, generated project metadata, or exports from a public bucket without an explicit access rule.
