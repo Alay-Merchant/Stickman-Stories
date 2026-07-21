@@ -1,6 +1,8 @@
 import {NextResponse} from "next/server";
 
 import {INPUT_MODES} from "@/lib/project";
+import {requireStudioAccess} from "@/lib/auth";
+import {proxyToRenderWorker} from "@/lib/worker-proxy";
 import {PROJECT_REQUEST_MAX_BYTES, readJsonRequest} from "@/lib/request";
 import {Target} from "@/lib/schema";
 import {createProject, listProjects} from "@/lib/workflow";
@@ -12,8 +14,11 @@ export const dynamic = "force-dynamic";
 const errorResponse = (error: unknown, status = 400) =>
   NextResponse.json({error: publicErrorMessage(error, "The project request could not be completed.")}, {status});
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    requireStudioAccess(request);
+    const proxied = await proxyToRenderWorker(request);
+    if (proxied) return proxied;
     const projects = listProjects().map(({dir: _dir, ...project}) => project);
     return NextResponse.json({projects});
   } catch (error) {
@@ -23,6 +28,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
+    requireStudioAccess(request);
+    const proxied = await proxyToRenderWorker(request);
+    if (proxied) return proxied;
     const body = (await readJsonRequest(request, PROJECT_REQUEST_MAX_BYTES)) as Record<string, unknown>;
     const title = typeof body.title === "string" ? body.title : "";
     const author = typeof body.author === "string" ? body.author : undefined;

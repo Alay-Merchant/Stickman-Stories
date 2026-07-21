@@ -37,7 +37,7 @@ const checkSrt = (filePath: string, videoSeconds: number) => {
 };
 
 const main = async () => {
-  const {createProject, generateProject, narrateProject, packageProject, renderProject} = await import("../lib/workflow");
+  const {approveProject, createProject, generateProject, narrateProject, packageProject, renderProject} = await import("../lib/workflow");
   const {getProjectPaths, readJsonFile} = await import("../lib/project");
   const {Pack, Storyboard} = await import("../lib/schema");
   const {measureLoudness, probeMedia} = await import("../lib/ffmpeg");
@@ -48,6 +48,8 @@ const main = async () => {
     sourceText: source,
     inputMode: "text",
     target: "yt_short",
+    rightsStatus: "creator_owned",
+    settings: {music_license_note: "Deterministic smoke-only silent bed."},
   });
   const paths = getProjectPaths(project.id);
 
@@ -73,6 +75,10 @@ const main = async () => {
     }
   }
 
+  approveProject(project.id, "source");
+  approveProject(project.id, "script");
+  approveProject(project.id, "storyboard");
+
   const {audio, storyboard: audioFirstStoryboard} = await narrateProject(project.id);
   if (audio.length !== audioFirstStoryboard.scenes.length) fail("did not create one narration MP3 per scene");
   for (const audioPath of audio) {
@@ -80,6 +86,8 @@ const main = async () => {
     const media = await probeMedia(audioPath);
     if (!(media.duration > 0)) fail(`narration has no positive duration: ${audioPath}`);
   }
+
+  approveProject(project.id, "storyboard");
 
   const rendered = await renderProject(project.id);
   if (!existsSync(rendered.export16)) fail("16x9 export is missing");

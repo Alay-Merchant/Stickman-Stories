@@ -17,6 +17,22 @@ body {
   min-height: 100%;
 }
 
+.studio-input {
+  width: 100%;
+  border: 2px solid #171717;
+  border-radius: 0.75rem;
+  background: #fff;
+  color: #171717;
+  padding: 0.7rem 0.85rem;
+  font: inherit;
+  outline: none;
+}
+
+.studio-input:focus {
+  border-color: #2f80ed;
+  box-shadow: 0 0 0 3px rgb(47 128 237 / 15%);
+}
+
 body {
   margin: 0;
   background: #fafaf7;
