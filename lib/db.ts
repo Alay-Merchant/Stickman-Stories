@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
-import {createRequire} from "node:module";
 import { dirname, join, resolve } from "node:path";
+import {DatabaseSync} from "node:sqlite";
+import BetterSqlite from "better-sqlite3";
 
 export type SqliteStatement = {
   run: (...params: unknown[]) => unknown;
@@ -13,10 +14,6 @@ export type SqliteDatabase = {
   prepare: (sql: string) => SqliteStatement;
   pragma?: (source: string) => unknown;
 };
-
-type BetterSqliteConstructor = new (filePath: string) => SqliteDatabase;
-type NodeSqliteModule = {DatabaseSync: new (filePath: string) => SqliteDatabase};
-const requireFromHere = createRequire(import.meta.url);
 
 declare global {
   // Keep one connection across Next.js development hot reloads.
@@ -66,20 +63,17 @@ export function getDb(): SqliteDatabase {
 
   let db: SqliteDatabase;
   try {
-    // better-sqlite3 remains the primary driver specified by Appendix A. It
-    // has prebuilt binaries for the supported Node releases used in normal
-    // installs. Node 24 may not have one yet on Windows, however, so use its
-    // built-in synchronous SQLite driver as a local-only compatibility path.
-    const BetterSqlite = requireFromHere(/* turbopackIgnore: true */ "better-sqlite3") as BetterSqliteConstructor;
-    db = new BetterSqlite(databasePath);
+    // Keep the native package for supported Node releases and deployments.
+    db = new BetterSqlite(databasePath) as unknown as SqliteDatabase;
     db.pragma?.("foreign_keys = ON");
     db.pragma?.("journal_mode = WAL");
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    const unavailableNativeBinding = /better_sqlite3\.node|Could not locate the bindings file|MODULE_NOT_FOUND|Cannot find module ['"]better-sqlite3/i.test(detail);
+    const unavailableNativeBinding = /better_sqlite3\.node|Could not locate the bindings file|MODULE_NOT_FOUND|ERR_DLOPEN_FAILED/i.test(detail);
     if (!unavailableNativeBinding) throw error;
-    const {DatabaseSync} = requireFromHere(/* turbopackIgnore: true */ "node:sqlite") as NodeSqliteModule;
-    db = new DatabaseSync(databasePath);
+    // Node 24 ships SQLite, avoiding a local C++ toolchain when the native
+    // better-sqlite3 binary was built for a different Node ABI.
+    db = new DatabaseSync(databasePath) as unknown as SqliteDatabase;
     db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL;");
   }
   migrate(db);
