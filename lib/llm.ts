@@ -1,11 +1,11 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 
 /** A small provider boundary so routes do not need to know about an LLM SDK. */
 export interface LLM {
   generate(system: string, user: string, json?: boolean): Promise<string>;
 }
 
-export type LLMProvider = "anthropic" | "stub";
+export type LLMProvider = "openai" | "stub";
 
 const isTruthyEnv = (value: string | undefined) =>
   value === "1" || value?.toLowerCase() === "true";
@@ -15,63 +15,53 @@ const selectedProvider = (): LLMProvider => {
   // the acceptance check remains network- and key-free.
   if (isTruthyEnv(process.env.SMOKE_STUB)) return "stub";
 
-  const value = (process.env.LLM_PROVIDER ?? "anthropic").trim().toLowerCase();
-  if (value === "" || value === "default" || value === "anthropic") {
-    return "anthropic";
+  const value = (process.env.LLM_PROVIDER ?? "openai").trim().toLowerCase();
+  if (value === "" || value === "default" || value === "openai") {
+    return "openai";
   }
   if (value === "stub") return "stub";
 
   throw new Error(
-    `Unsupported LLM_PROVIDER \"${process.env.LLM_PROVIDER}\". Use \"anthropic\" (the default) or \"stub\".`,
+    `Unsupported LLM_PROVIDER \"${process.env.LLM_PROVIDER}\". Use \"openai\" (the default) or \"stub\".`,
   );
 };
 
 const jsonOnlyInstruction =
   "Return a single valid JSON value only. Do not include Markdown fences, commentary, or a preamble.";
 
-const textFromResponse = (content: Anthropic.ContentBlock[]): string => {
-  const text = content
-    .filter((block): block is Anthropic.TextBlock => block.type === "text")
-    .map((block) => block.text)
-    .join("\n")
-    .trim();
-
-  if (!text) {
-    throw new Error("Anthropic returned no text content.");
-  }
-
-  return text;
-};
-
-export class AnthropicLLM implements LLM {
-  private readonly client: Anthropic;
+/** Server-side OpenAI Responses API adapter for the creator workflow. */
+export class OpenAILLM implements LLM {
+  private readonly client: OpenAI;
   private readonly model: string;
 
   constructor(options: { apiKey?: string; model?: string } = {}) {
-    const apiKey = options.apiKey ?? process.env.ANTHROPIC_API_KEY;
+    const apiKey = options.apiKey ?? process.env.OPENAI_API_KEY;
     if (!apiKey) {
       throw new Error(
-        "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic. Set LLM_PROVIDER=stub (or SMOKE_STUB=1) for a keyless local smoke run.",
+        "OPENAI_API_KEY is required when LLM_PROVIDER=openai. Set LLM_PROVIDER=stub (or SMOKE_STUB=1) for a keyless local smoke run.",
       );
     }
 
-    this.client = new Anthropic({ apiKey });
-    this.model = options.model ?? process.env.ANTHROPIC_MODEL ?? "claude-sonnet-5";
+    this.client = new OpenAI({ apiKey });
+    this.model = options.model ?? process.env.OPENAI_MODEL ?? "gpt-5.6-terra";
   }
 
   async generate(system: string, user: string, json = false): Promise<string> {
     try {
-      const response = await this.client.messages.create({
+      const response = await this.client.responses.create({
         model: this.model,
-        max_tokens: 4_096,
-        system: json ? `${system}\n\n${jsonOnlyInstruction}` : system,
-        messages: [{ role: "user", content: user }],
+        max_output_tokens: 4_096,
+        instructions: json ? `${system}\n\n${jsonOnlyInstruction}` : system,
+        input: user,
+        // Editorial source material and drafts are not retained as response state.
+        store: false,
       });
-
-      return textFromResponse(response.content);
+      const text = response.output_text.trim();
+      if (!text) throw new Error("OpenAI returned no text content.");
+      return text;
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`Anthropic generation failed: ${detail}`);
+      throw new Error(`OpenAI generation failed: ${detail}`);
     }
   }
 }
@@ -229,8 +219,8 @@ export class StubLLM implements LLM {
 /** Creates the configured adapter. A new instance makes testing and overrides simple. */
 export const createLLM = (): LLM => {
   switch (selectedProvider()) {
-    case "anthropic":
-      return new AnthropicLLM();
+    case "openai":
+      return new OpenAILLM();
     case "stub":
       return new StubLLM();
   }

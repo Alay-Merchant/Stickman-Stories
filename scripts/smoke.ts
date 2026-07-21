@@ -2,14 +2,12 @@ import {existsSync, readFileSync} from "node:fs";
 import path from "node:path";
 
 const hasRealProviders = Boolean(
-  process.env.ANTHROPIC_API_KEY &&
-  process.env.ELEVENLABS_API_KEY &&
-  process.env.ELEVENLABS_VOICE_ID,
+  process.env.OPENAI_API_KEY,
 );
 
-// A plain `npm run smoke` is always useful on a fresh clone. If a fully
-// configured creator deliberately supplies both providers, retain the plan's
-// real-provider mode; SMOKE_STUB=1 always forces the deterministic CI path.
+// A plain `npm run smoke` is always useful on a fresh clone. A creator who
+// deliberately supplies an OpenAI key can opt into the live-provider path;
+// SMOKE_STUB=1 always forces the deterministic CI path.
 if (process.env.SMOKE_STUB === undefined) process.env.SMOKE_STUB = hasRealProviders ? "0" : "1";
 if (!process.env.STUDIO_DATA_DIR) {
   process.env.STUDIO_DATA_DIR = path.join(process.cwd(), "data", "smoke", `${Date.now()}-${process.pid}`);
