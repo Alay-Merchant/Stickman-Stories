@@ -523,10 +523,25 @@ const narrateProjectUnlocked = async (id: string) => {
   mkdirSync(paths.audio, {recursive: true});
   const audio: string[] = [];
   const scenes = [] as StoryboardValue["scenes"];
+  const narrationRequests = storyboard.scenes.map((scene) => ({
+    text: scene.narration,
+    outPath: path.join(paths.audio, `scene_${scene.scene_id}.mp3`),
+  }));
+  const results: Array<{ seconds: number }> = [];
 
-  for (const scene of storyboard.scenes) {
-    const outPath = path.join(paths.audio, `scene_${scene.scene_id}.mp3`);
-    const result = await tts.synthesize(scene.narration, outPath);
+  if (tts.synthesizeBatch) {
+    results.push(...(await tts.synthesizeBatch(narrationRequests)));
+  } else {
+    for (const request of narrationRequests) results.push(await tts.synthesize(request.text, request.outPath));
+  }
+  if (results.length !== storyboard.scenes.length) {
+    throw new Error("The narration provider returned an incomplete set of scene durations.");
+  }
+
+  for (let index = 0; index < storyboard.scenes.length; index += 1) {
+    const scene = storyboard.scenes[index];
+    const outPath = narrationRequests[index].outPath;
+    const result = results[index];
     if (!Number.isFinite(result.seconds) || result.seconds <= 0) {
       throw new Error(`Narration for scene ${scene.scene_id} did not produce a usable duration.`);
     }

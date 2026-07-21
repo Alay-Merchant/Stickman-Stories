@@ -14,7 +14,9 @@ Private creator studio for turning approved source material into an original whi
 ```powershell
 npm.cmd install
 Copy-Item .env.example .env
-# Add provider keys and one licensed music track in public/music/
+# One-time local Tortoise setup (NVIDIA GPU required)
+.\scripts\setup-tortoise.ps1
+# Add an Anthropic key and one licensed music track in public/music/
 npm.cmd run dev
 ```
 
@@ -32,7 +34,13 @@ The first real video flow is:
 npm.cmd run smoke
 ```
 
-Smoke uses deterministic local LLM/TTS stubs if provider credentials are absent, but still renders both MP4 formats. Set `SMOKE_STUB=0` with complete provider credentials to exercise live providers.
+Smoke uses deterministic local LLM/TTS stubs if provider credentials are absent, but still renders both MP4 formats. Set `SMOKE_STUB=0` with an Anthropic key and Tortoise installed to exercise the live local voice path.
+
+## Local Tortoise voice
+
+Tortoise is the default TTS provider. Run `scripts/setup-tortoise.ps1` once; it creates an isolated Python environment at `%LOCALAPPDATA%\WhiteboardStudio\tortoise`, installs CUDA-enabled PyTorch and a pinned Tortoise revision, and downloads about 4.2 GB of model weights on the first synthesis. The RTX 3050 Ti uses the `ultra_fast` preset by default. A full storyboard is sent to Tortoise as one local batch, so it loads the model once per narration job rather than once per scene.
+
+Set `TORTOISE_VOICE=random` for a synthetic random voice, or put one or more consented `.wav`/`.mp3` reference clips in `%LOCALAPPDATA%\WhiteboardStudio\tortoise\voices\your_voice` and set `TORTOISE_VOICE=your_voice`. Use only voices you have permission to synthesize.
 
 ## Hosting
 

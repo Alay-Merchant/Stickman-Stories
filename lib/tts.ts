@@ -1,14 +1,18 @@
 import { spawn } from "node:child_process";
-import { mkdir, writeFile } from "node:fs/promises";
+import { access, mkdir, rm, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import ffmpegStatic from "ffmpeg-static";
 
 /** A small provider boundary so routes do not need to know about a TTS SDK. */
+export type TTSClip = { text: string; outPath: string };
+
 export interface TTS {
   synthesize(text: string, outPath: string): Promise<{ seconds: number }>;
+  /** Optional bulk path for a local provider that can keep a model resident. */
+  synthesizeBatch?(clips: TTSClip[]): Promise<Array<{ seconds: number }>>;
 }
 
-export type TTSProvider = "elevenlabs" | "stub";
+export type TTSProvider = "tortoise" | "elevenlabs" | "stub";
 
 type SpawnResult = { stdout: string; stderr: string };
 
@@ -19,14 +23,17 @@ const selectedProvider = (): TTSProvider => {
   // Keep `npm run smoke` hermetic even if a local .env selects ElevenLabs.
   if (isTruthyEnv(process.env.SMOKE_STUB)) return "stub";
 
-  const value = (process.env.TTS_PROVIDER ?? "elevenlabs").trim().toLowerCase();
-  if (value === "" || value === "default" || value === "elevenlabs") {
+  const value = (process.env.TTS_PROVIDER ?? "tortoise").trim().toLowerCase();
+  if (value === "" || value === "default" || value === "tortoise") {
+    return "tortoise";
+  }
+  if (value === "elevenlabs") {
     return "elevenlabs";
   }
   if (value === "stub") return "stub";
 
   throw new Error(
-    `Unsupported TTS_PROVIDER \"${process.env.TTS_PROVIDER}\". Use \"elevenlabs\" (the default) or \"stub\".`,
+    `Unsupported TTS_PROVIDER \"${process.env.TTS_PROVIDER}\". Use \"tortoise\" (the default), \"elevenlabs\", or \"stub\".`,
   );
 };
 
@@ -99,6 +106,57 @@ const ensureParentDirectory = async (outPath: string) => {
   await mkdir(path.dirname(path.resolve(outPath)), { recursive: true });
 };
 
+const defaultTortoiseRoot = () => {
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+    return path.join(process.env.LOCALAPPDATA, "WhiteboardStudio", "tortoise");
+  }
+  return undefined;
+};
+
+const tortoisePython = () => {
+  const configured = process.env.TORTOISE_PYTHON?.trim();
+  if (configured) return configured;
+  const root = defaultTortoiseRoot();
+  if (root) {
+    return path.join(root, ".venv", "Scripts", "python.exe");
+  }
+  return "python3";
+};
+
+const tortoiseBridge = () => path.join(process.cwd(), "scripts", "tortoise_bridge.py");
+
+const encodeTortoiseWav = async (source: string, destination: string) => {
+  const errors: string[] = [];
+  for (const ffmpeg of ffmpegCandidates()) {
+    for (const encoder of ["libmp3lame", "mp3"]) {
+      try {
+        await run(ffmpeg, [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-i",
+          source,
+          "-vn",
+          "-ac",
+          "1",
+          "-ar",
+          "44100",
+          "-c:a",
+          encoder,
+          "-b:a",
+          "192k",
+          "-y",
+          destination,
+        ]);
+        return;
+      } catch (error) {
+        errors.push(`${ffmpeg} (${encoder}): ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+  throw new Error(`Tortoise generated audio, but FFmpeg could not encode an MP3. ${errors.join(" | ")}`);
+};
+
 const readableHttpError = async (response: Response) => {
   const body = (await response.text()).replace(/\s+/g, " ").trim();
   return body ? `${response.status} ${response.statusText}: ${body.slice(0, 500)}` : `${response.status} ${response.statusText}`;
@@ -166,6 +224,84 @@ export class ElevenLabsTTS implements TTS {
   }
 }
 
+/**
+ * Local NVIDIA-backed Tortoise adapter. Tortoise generates a temporary WAV;
+ * the worker then encodes a normal MP3 so the existing render pipeline and
+ * project layout stay unchanged. Only use voice samples you are authorised to
+ * use and identify as synthetic in published work where appropriate.
+ */
+export class TortoiseTTS implements TTS {
+  private readonly python: string;
+  private readonly voice: string;
+  private readonly preset: string;
+  private readonly modelDir: string | undefined;
+  private readonly voiceDir: string | undefined;
+
+  constructor(options: { python?: string; voice?: string; preset?: string; modelDir?: string; voiceDir?: string } = {}) {
+    this.python = options.python ?? tortoisePython();
+    this.voice = options.voice ?? (process.env.TORTOISE_VOICE?.trim() || "random");
+    this.preset = options.preset ?? (process.env.TORTOISE_PRESET?.trim() || "ultra_fast");
+    const root = defaultTortoiseRoot();
+    this.modelDir = options.modelDir ?? (process.env.TORTOISE_MODELS_DIR?.trim() || (root ? path.join(root, "models") : undefined));
+    this.voiceDir = options.voiceDir ?? (process.env.TORTOISE_VOICE_DIR?.trim() || (root ? path.join(root, "voices") : undefined));
+  }
+
+  async synthesize(text: string, outPath: string): Promise<{ seconds: number }> {
+    const [result] = await this.synthesizeBatch([{ text, outPath }]);
+    return result;
+  }
+
+  async synthesizeBatch(clips: TTSClip[]): Promise<Array<{ seconds: number }>> {
+    if (!clips.length) return [];
+    for (const clip of clips) {
+      if (!clip.text.trim()) throw new Error("Cannot synthesize an empty narration string.");
+      await ensureParentDirectory(clip.outPath);
+    }
+    try {
+      await access(this.python);
+    } catch {
+      throw new Error(`Tortoise is not installed at ${this.python}. Run scripts/setup-tortoise.ps1, or set TORTOISE_PYTHON to its Python executable.`);
+    }
+
+    const stem = `${path.resolve(clips[0].outPath)}.${process.pid}.${Date.now()}.tortoise`;
+    const batchPath = `${stem}.json`;
+    const wavPaths = clips.map((clip, index) => `${clip.outPath}.${process.pid}.${Date.now()}.${index}.tortoise.wav`);
+    try {
+      await writeFile(
+        batchPath,
+        JSON.stringify(clips.map((clip, index) => ({ text: clip.text, output: wavPaths[index] }))),
+        "utf8",
+      );
+      const args = [
+        tortoiseBridge(),
+        "--batch-file",
+        batchPath,
+        "--voice",
+        this.voice,
+        "--preset",
+        this.preset,
+      ];
+      if (this.modelDir) args.push("--models-dir", this.modelDir);
+      if (this.voiceDir) args.push("--voice-dir", this.voiceDir);
+      await run(this.python, args);
+      const results: Array<{ seconds: number }> = [];
+      for (let index = 0; index < clips.length; index += 1) {
+        const clip = clips[index];
+        const wav = await stat(wavPaths[index]);
+        if (wav.size === 0) throw new Error(`Tortoise returned an empty WAV file for narration ${index + 1}.`);
+        await encodeTortoiseWav(wavPaths[index], clip.outPath);
+        results.push({ seconds: await audioDurationWithFfmpeg(clip.outPath) });
+      }
+      return results;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`Tortoise synthesis failed: ${detail}`);
+    } finally {
+      await Promise.all([rm(batchPath, { force: true }), ...wavPaths.map((wavPath) => rm(wavPath, { force: true }))]);
+    }
+  }
+}
+
 const stubSecondsFor = (text: string) => {
   const words = text.trim().split(/\s+/).filter(Boolean).length;
   // Audible but brief: enough time for a scene and quick enough for CI.
@@ -222,6 +358,8 @@ export class StubTTS implements TTS {
 /** Creates the configured adapter. A new instance makes testing and overrides simple. */
 export const createTTS = (): TTS => {
   switch (selectedProvider()) {
+    case "tortoise":
+      return new TortoiseTTS();
     case "elevenlabs":
       return new ElevenLabsTTS();
     case "stub":
