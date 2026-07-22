@@ -44,11 +44,11 @@ Set `TORTOISE_VOICE=random` for a synthetic random voice, or put one or more con
 
 ## Hosting
 
-Read [DEPLOYMENT.md](DEPLOYMENT.md) before deploying. Vercel or Netlify can host the protected Next.js editor; configure `RENDER_WORKER_URL` and the same private `WORKER_SHARED_SECRET` on it and the persistent worker. The editor then proxies all project actions to that worker, while PocketBase stores the private project snapshot. Do not place a multi-minute Remotion/FFmpeg job or PocketBase's data directory in a serverless function.
+Read [DEPLOYMENT.md](DEPLOYMENT.md) before deploying. Vercel or Netlify can host the Next.js editor; configure `RENDER_WORKER_URL` and the same private `WORKER_SHARED_SECRET` on it and the persistent worker. The editor then proxies all project actions to that worker, while PocketBase stores the private project snapshot. Do not place a multi-minute Remotion/FFmpeg job or PocketBase's data directory in a serverless function.
 
 ## Security
 
-- Keep `.env` private. Production requires `STUDIO_ACCESS_TOKEN`, which protects the studio with an HTTP-only signed session cookie.
+- Keep `.env` private. The app has no built-in sign-in, so keep a hosted editor and worker behind a trusted network boundary.
 - The local app listens only on loopback. Remotion's temporary renderer server is also constrained to loopback.
-- The UI intentionally does not expose absolute filesystem paths, provider keys, or raw source data to unauthenticated users.
+- The UI intentionally does not expose absolute filesystem paths or provider keys.
 - Use only source text, music, voices, fonts, and assets you have the right to use. Reference-only projects always require human fact checking.

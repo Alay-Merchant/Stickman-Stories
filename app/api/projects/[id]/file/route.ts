@@ -2,7 +2,6 @@ import {readFile} from "node:fs/promises";
 
 import {NextResponse} from "next/server";
 
-import {requireStudioAccess} from "@/lib/auth";
 import {getProjectPaths} from "@/lib/project";
 import {proxyToRenderWorker} from "@/lib/worker-proxy";
 
@@ -20,11 +19,6 @@ const files = {
 } as const;
 
 export async function GET(request: Request, {params}: {params: Promise<{id: string}>}) {
-  try {
-    requireStudioAccess(request);
-  } catch {
-    return NextResponse.json({error: "Studio sign-in is required."}, {status: 401});
-  }
   try {
     const proxied = await proxyToRenderWorker(request);
     if (proxied) return proxied;
