@@ -1,8 +1,22 @@
 const sameOrigin = (request: Request) => {
   const origin = request.headers.get("origin");
   // Programmatic/local callers (including the smoke check) do not send Origin.
-  // Browser mutations must be same-origin to avoid cross-site form/fetch abuse.
-  if (origin && origin !== new URL(request.url).origin) {
+  // The desktop browser can present a local page through a different loopback
+  // port than the Next server, so permit loopback-to-loopback requests only.
+  if (!origin) return;
+  const requestUrl = new URL(request.url);
+  let originUrl: URL;
+  try {
+    originUrl = new URL(origin);
+  } catch {
+    throw new Error("Invalid request origin.");
+  }
+  const loopbackHosts = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
+  const isLocalRequest = loopbackHosts.has(requestUrl.hostname);
+  const isLocalOrigin = loopbackHosts.has(originUrl.hostname);
+  // Browser mutations outside loopback must still be same-origin to avoid
+  // cross-site form/fetch abuse in a hosted deployment.
+  if (origin !== requestUrl.origin && !(isLocalRequest && isLocalOrigin)) {
     throw new Error("Cross-origin requests are not allowed by this local studio.");
   }
 };
