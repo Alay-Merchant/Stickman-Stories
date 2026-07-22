@@ -17,7 +17,7 @@ export default function NewProjectPage() {
   const [title, setTitle] = useState("");
   const [author, setAuthor] = useState("");
   const [sourceText, setSourceText] = useState("");
-  const [referenceOnly, setReferenceOnly] = useState(false);
+  const [referenceOnly, setReferenceOnly] = useState(true);
   const [target, setTarget] = useState<Target>("yt_short");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -51,7 +51,7 @@ export default function NewProjectPage() {
     <main className="mx-auto min-h-screen max-w-3xl px-6 py-12">
       <a className="text-sm font-bold text-[#2f80ed] hover:underline" href="/">← All projects</a>
       <h1 className="mt-6 text-4xl font-black">Create a project</h1>
-      <p className="mt-2 text-[#4a4a4a]">Choose the output first, then give the studio approved source notes or a reference-only brief.</p>
+      <p className="mt-2 text-[#4a4a4a]">Choose the output first. Source notes are optional; you can create a reference-only brief instead.</p>
       <form className="mt-8 space-y-7 rounded-3xl border-2 border-[#171717] bg-white p-6 sm:p-8" onSubmit={submit}>
         <label className="block">
           <span className="font-bold">Project title</span>
@@ -66,19 +66,19 @@ export default function NewProjectPage() {
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className={`cursor-pointer rounded-xl border-2 p-4 ${!referenceOnly ? "border-[#27ae60] bg-[#eefaf2]" : "border-[#171717]"}`}>
               <input checked={!referenceOnly} className="mr-2" name="sourceMode" onChange={() => setReferenceOnly(false)} type="radio" />
-              <span className="font-bold">Approved notes</span>
-              <span className="mt-1 block text-sm text-[#4a4a4a]">Paste Markdown or text you may use.</span>
+              <span className="font-bold">Use source notes</span>
+              <span className="mt-1 block text-sm text-[#4a4a4a]">Optional: paste Markdown or text you may use.</span>
             </label>
             <label className={`cursor-pointer rounded-xl border-2 p-4 ${referenceOnly ? "border-[#eb5757] bg-[#fff3f3]" : "border-[#171717]"}`}>
               <input checked={referenceOnly} className="mr-2" name="sourceMode" onChange={() => setReferenceOnly(true)} type="radio" />
-              <span className="font-bold">Reference-only</span>
-              <span className="mt-1 block text-sm text-[#4a4a4a]">Every claim needs fact-checking.</span>
+              <span className="font-bold">No source notes</span>
+              <span className="mt-1 block text-sm text-[#4a4a4a]">Create a reference-only brief; fact-check claims before publishing.</span>
             </label>
           </div>
         </fieldset>
         {!referenceOnly && (
           <label className="block">
-            <span className="font-bold">Approved source notes</span>
+            <span className="font-bold">Source notes</span>
             <textarea className="mt-2 min-h-56 w-full rounded-xl border-2 border-[#171717] px-4 py-3 outline-none focus:border-[#2f80ed]" onChange={(event) => setSourceText(event.target.value)} placeholder="Paste permitted notes or Markdown…" required value={sourceText} />
           </label>
         )}
